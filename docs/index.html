@@ -759,37 +759,98 @@ async function toggleDeviceApps(btn) {
   appsEl.innerHTML = "<span class='muted'>Loading installed applications…</span>";
 
   try {
-    // Note: Intune's newer "App inventory" feature (Devices > device >
-    // All Apps > App Inventory tab) has NO Graph API — it's portal-only
-    // and requires a device configuration policy before any data is
-    // collected. The only per-device app list exposed via Graph is the
-    // "Discovered apps" data below (managedDevice -> detectedApps), which
-    // is also only exposed on the beta endpoint (not yet in v1.0). We
-    // pull every field detectedApps supports (publisher, platform, size)
-    // to get as close as possible to an "inventory" view.
-    const apps = await graphGetAll(
-      `https://graph.microsoft.com/beta/deviceManagement/managedDevices/${deviceId}/detectedApps` +
-      "?$select=displayName,version,publisher,platform,sizeInByte&$top=999&$orderby=displayName"
-    );
-    if (apps.length === 0) {
-      appsEl.innerHTML = "<span class='muted'>No detected applications for this device.</span>";
-    } else {
-      appsEl.innerHTML = `
-        <ul class="device-apps-list">
-          ${apps.map((a) => {
-            const details = [a.publisher, a.platform, formatBytes(a.sizeInByte)].filter(Boolean).join(" · ");
-            return `<li>
-              <span class="app-name">${escapeHtml(a.displayName || "(unknown)")}</span>
-              <span class="app-version">${escapeHtml(a.version || "")}</span>
-              <span class="app-details">${escapeHtml(details)}</span>
-            </li>`;
-          }).join("")}
-        </ul>`;
+    appsEl.innerHTML = await loadAppInventoryHtml(deviceId);
+  } catch (inventoryErr) {
+    // App inventory data isn't available for every device (it requires a
+    // Properties catalog policy to be assigned and the device to have
+    // checked in since). Fall back to "Discovered apps" (detectedApps),
+    // the older Graph-exposed per-device app source, so the drill-down
+    // still shows something useful.
+    try {
+      appsEl.innerHTML = await loadDetectedAppsHtml(deviceId);
+    } catch (fallbackErr) {
+      appsEl.innerHTML = `<span class="error">Failed to load applications: ${escapeHtml(fallbackErr.message)}</span>`;
     }
-    appsEl.dataset.loaded = "true";
-  } catch (err) {
-    appsEl.innerHTML = `<span class="error">Failed to load applications: ${escapeHtml(err.message)}</span>`;
   }
+  appsEl.dataset.loaded = "true";
+}
+
+// Real endpoint the Intune admin center's device "All Apps > App
+// Inventory" tab calls under the hood (undocumented, beta-only). The
+// "ApplicationProperties" inventory group's "instances" collection has
+// one entry per installed application; expanding each instance's
+// properties (cast to deviceInventorySimpleItem) returns whatever fields
+// the assigned Properties catalog policy is configured to collect (app
+// name, version, publisher, install location, size, etc.). Since the
+// exact property names aren't documented, they're read generically below
+// rather than assumed.
+async function loadAppInventoryHtml(deviceId) {
+  const inventory = await callGraph(
+    `https://graph.microsoft.com/beta/deviceManagement/managedDevices('${deviceId}')/deviceInventories('ApplicationProperties')` +
+    "?$expand=instances($expand=Microsoft.Graph.deviceInventorySimpleItem/properties)"
+  );
+  const instances = inventory.instances || [];
+  if (instances.length === 0) {
+    // Distinguish "no policy assigned" from "genuinely no apps" isn't
+    // possible from this response alone, so the message covers both.
+    return "<span class='muted'>No app inventory data for this device (the App inventory policy may not be assigned yet, or the device hasn't checked in).</span>";
+  }
+  return `
+    <ul class="device-apps-list">
+      ${instances.map(renderAppInventoryInstance).join("")}
+    </ul>`;
+}
+
+// Extracts a display row from one app-inventory instance without assuming
+// exact property names, since this endpoint is undocumented.
+function renderAppInventoryInstance(instance) {
+  const props = instance.properties || [];
+  const entries = props
+    .map((p) => ({
+      label: p.displayName || p.name || p.settingDefinitionId || p.id || "",
+      value: p.value ?? p.stringValue ?? p.simpleValue ?? (Array.isArray(p.values) ? p.values.join(", ") : "")
+    }))
+    .filter((e) => e.label && e.value !== undefined && e.value !== null && e.value !== "");
+
+  const takeByKeyword = (...keywords) => {
+    const idx = entries.findIndex((e) => keywords.some((k) => e.label.toLowerCase().includes(k)));
+    return idx === -1 ? null : entries.splice(idx, 1)[0];
+  };
+  const nameEntry = takeByKeyword("app name", "appname", "name");
+  const versionEntry = takeByKeyword("version");
+  // Whatever's left (publisher, size, install location, etc.) is shown as
+  // supplementary detail text.
+  const details = entries.map((e) => `${e.label}: ${e.value}`).join(" · ");
+
+  return `<li>
+    <span class="app-name">${escapeHtml(nameEntry ? nameEntry.value : "(unknown)")}</span>
+    <span class="app-version">${escapeHtml(versionEntry ? versionEntry.value : "")}</span>
+    <span class="app-details">${escapeHtml(details)}</span>
+  </li>`;
+}
+
+// Fallback source: the older "Discovered apps" data (managedDevice ->
+// detectedApps), only exposed on the beta endpoint, used when App
+// inventory has no data for a device.
+async function loadDetectedAppsHtml(deviceId) {
+  const apps = await graphGetAll(
+    `https://graph.microsoft.com/beta/deviceManagement/managedDevices/${deviceId}/detectedApps` +
+    "?$select=displayName,version,publisher,platform,sizeInByte&$top=999&$orderby=displayName"
+  );
+  if (apps.length === 0) {
+    return "<span class='muted'>No detected applications for this device.</span>";
+  }
+  return `
+    <ul class="device-apps-list">
+      ${apps.map((a) => {
+        const details = [a.publisher, a.platform, formatBytes(a.sizeInByte)].filter(Boolean).join(" · ");
+        return `<li>
+          <span class="app-name">${escapeHtml(a.displayName || "(unknown)")}</span>
+          <span class="app-version">${escapeHtml(a.version || "")}</span>
+          <span class="app-details">${escapeHtml(details)}</span>
+        </li>`;
+      }).join("")}
+    </ul>`;
 }
 
 // Formats a byte count as a human-readable size (e.g. "12.3 MB").
