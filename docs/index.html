@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Intune Read-Only Portal</title>
+<title>Dashboard</title>
 <script src="https://alcdn.msauth.net/browser/2.35.0/js/msal-browser.min.js" crossorigin="anonymous" integrity="sha384-PARf28kmic36Ve+O3DnUerRXFtOQ7ZDqRDGpLcbljly5/N39T2OV3kt3QsWOKeAX"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -184,7 +184,7 @@
 <header>
   <div class="brand">
     <span class="brand-mark" aria-hidden="true"></span>
-    <h1>Intune Read-Only Portal</h1>
+    <h1>Dashboard</h1>
   </div>
   <div class="actions">
     <span id="userInfo"></span>
@@ -199,14 +199,14 @@
 
   <div id="signedInMsg">
     <div class="tiles">
-      <div class="tile"><div class="tile-label">Supported Products Detected</div><div class="tile-value" id="tileTracked">–</div></div>
+      <div class="tile"><div class="tile-label">Supported Applications Detected</div><div class="tile-value" id="tileTracked">–</div></div>
       <div class="tile"><div class="tile-label">Up To Date Versions</div><div class="tile-value ok" id="tileOk">–</div></div>
       <div class="tile"><div class="tile-label">Versions Needing Update</div><div class="tile-value warn" id="tileWarn">–</div></div>
       <div class="tile"><div class="tile-label">Devices Needing Update</div><div class="tile-value warn" id="tileDevices">–</div></div>
     </div>
 
     <div class="card">
-      <h2>Patch Compliance Overview</h2>
+      <h2>Patch My PC Patch Compliance Overview</h2>
       <div class="toolbar">
         <button id="loadComplianceBtn" type="button">Load / Refresh Report</button>
         <span class="muted">Lists every installed app across your Windows devices that is supported by Patch My PC's catalog. Version compliance (up to date / update needed) is shown wherever a comparison is possible.</span>
@@ -582,7 +582,7 @@ function renderComplianceTable(rows) {
   let html = `<table>
     <thead>
       <tr>
-        <th>Patch My PC Product</th>
+        <th>Applications</th>
         <th>Vendor</th>
         <th>Detected Install Name</th>
         <th>Installed Version</th>
