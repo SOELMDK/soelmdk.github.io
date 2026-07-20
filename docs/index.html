@@ -160,10 +160,11 @@
   .device-chevron { color: var(--muted); transition: transform .15s ease; flex-shrink: 0; }
   .device-item.expanded .device-chevron { transform: rotate(90deg); }
   .device-apps { border-top: 1px solid var(--border); background: var(--bg); padding: 10px 14px; }
-  .device-apps-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; font-size: 12.5px; }
+  .device-apps-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr auto auto; gap: 4px 12px; font-size: 12.5px; }
   .device-apps-list li { display: contents; }
   .device-apps-list .app-name { color: var(--ink); }
   .device-apps-list .app-version { color: var(--muted); text-align: right; }
+  .device-apps-list .app-details { color: var(--muted); text-align: right; }
 
   .version-chip { font-size: 13px; font-weight: 500; }
   .version-chip.ok { color: var(--ok); }
@@ -758,24 +759,50 @@ async function toggleDeviceApps(btn) {
   appsEl.innerHTML = "<span class='muted'>Loading installed applications…</span>";
 
   try {
-    // Note: the managedDevice -> detectedApps navigation property is only
-    // exposed on the beta endpoint (not yet available in v1.0).
+    // Note: Intune's newer "App inventory" feature (Devices > device >
+    // All Apps > App Inventory tab) has NO Graph API — it's portal-only
+    // and requires a device configuration policy before any data is
+    // collected. The only per-device app list exposed via Graph is the
+    // "Discovered apps" data below (managedDevice -> detectedApps), which
+    // is also only exposed on the beta endpoint (not yet in v1.0). We
+    // pull every field detectedApps supports (publisher, platform, size)
+    // to get as close as possible to an "inventory" view.
     const apps = await graphGetAll(
       `https://graph.microsoft.com/beta/deviceManagement/managedDevices/${deviceId}/detectedApps` +
-      "?$select=displayName,version&$top=999&$orderby=displayName"
+      "?$select=displayName,version,publisher,platform,sizeInByte&$top=999&$orderby=displayName"
     );
     if (apps.length === 0) {
       appsEl.innerHTML = "<span class='muted'>No detected applications for this device.</span>";
     } else {
       appsEl.innerHTML = `
         <ul class="device-apps-list">
-          ${apps.map((a) => `<li><span class="app-name">${escapeHtml(a.displayName || "(unknown)")}</span><span class="app-version">${escapeHtml(a.version || "")}</span></li>`).join("")}
+          ${apps.map((a) => {
+            const details = [a.publisher, a.platform, formatBytes(a.sizeInByte)].filter(Boolean).join(" · ");
+            return `<li>
+              <span class="app-name">${escapeHtml(a.displayName || "(unknown)")}</span>
+              <span class="app-version">${escapeHtml(a.version || "")}</span>
+              <span class="app-details">${escapeHtml(details)}</span>
+            </li>`;
+          }).join("")}
         </ul>`;
     }
     appsEl.dataset.loaded = "true";
   } catch (err) {
     appsEl.innerHTML = `<span class="error">Failed to load applications: ${escapeHtml(err.message)}</span>`;
   }
+}
+
+// Formats a byte count as a human-readable size (e.g. "12.3 MB").
+function formatBytes(bytes) {
+  if (!bytes || bytes <= 0) return "";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex++;
+  }
+  return `${value.toFixed(1)} ${units[unitIndex]}`;
 }
 
 /* =========================================================================
