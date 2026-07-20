@@ -171,6 +171,19 @@
   .version-chip.unknown { color: var(--muted); }
   .muted { color: var(--muted); font-size: 12.5px; }
 
+  .tabs { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 1px solid var(--border); }
+  .tab-btn {
+    background: none; border: none; cursor: pointer; font: inherit;
+    padding: 10px 18px; font-size: 14.5px; font-weight: 500; color: var(--muted);
+    border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color .15s ease;
+  }
+  .tab-btn:hover { color: var(--purple-dark); }
+  .tab-btn[aria-selected="true"] { color: var(--purple); border-bottom-color: var(--purple); }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+  .checkbox-label { display: inline-flex; align-items: center; gap: 6px; font-size: 13.5px; color: var(--muted); cursor: pointer; }
+  .checkbox-label input { cursor: pointer; }
+
   @media (max-width: 640px) {
     header { padding: 14px 16px; flex-wrap: wrap; }
     main { padding: 16px; }
@@ -198,21 +211,41 @@
   <p id="signedOutMsg">Sign in with your Azure AD account to continue.</p>
 
   <div id="signedInMsg">
-    <div class="tiles">
-      <div class="tile"><div class="tile-label">Supported Applications Detected</div><div class="tile-value" id="tileTracked">–</div></div>
-      <div class="tile"><div class="tile-label">Up To Date Versions</div><div class="tile-value ok" id="tileOk">–</div></div>
-      <div class="tile"><div class="tile-label">Versions Needing Update</div><div class="tile-value warn" id="tileWarn">–</div></div>
-      <div class="tile"><div class="tile-label">Devices Needing Update</div><div class="tile-value warn" id="tileDevices">–</div></div>
+    <div class="tabs" role="tablist" aria-label="Report sections">
+      <button type="button" class="tab-btn" role="tab" id="tabBtnCompliance" aria-selected="true" aria-controls="tabPanelCompliance">Patch Compliance</button>
+      <button type="button" class="tab-btn" role="tab" id="tabBtnApplications" aria-selected="false" aria-controls="tabPanelApplications">Applications</button>
     </div>
 
-    <div class="card">
-      <h2>Patch My PC Patch Compliance Overview</h2>
-      <div class="toolbar">
-        <button id="loadComplianceBtn" type="button">Load / Refresh Report</button>
-        <span class="muted">Lists every installed app across your Windows devices that is supported by Patch My PC's catalog. Version compliance (up to date / update needed) is shown wherever a comparison is possible.</span>
+    <div id="tabPanelCompliance" class="tab-panel active" role="tabpanel" aria-labelledby="tabBtnCompliance">
+      <div class="tiles">
+        <div class="tile"><div class="tile-label">Supported Applications Detected</div><div class="tile-value" id="tileTracked">–</div></div>
+        <div class="tile"><div class="tile-label">Up To Date Versions</div><div class="tile-value ok" id="tileOk">–</div></div>
+        <div class="tile"><div class="tile-label">Versions Needing Update</div><div class="tile-value warn" id="tileWarn">–</div></div>
+        <div class="tile"><div class="tile-label">Devices Needing Update</div><div class="tile-value warn" id="tileDevices">–</div></div>
       </div>
-      <div class="status-line" id="complianceStatus" role="status" aria-live="polite"></div>
-      <div id="complianceResult"></div>
+
+      <div class="card">
+        <h2>Patch My PC Patch Compliance Overview</h2>
+        <div class="toolbar">
+          <button id="loadComplianceBtn" type="button">Load / Refresh Report</button>
+          <span class="muted">Lists every installed app across your Windows devices that is supported by Patch My PC's catalog. Version compliance (up to date / update needed) is shown wherever a comparison is possible.</span>
+        </div>
+        <div class="status-line" id="complianceStatus" role="status" aria-live="polite"></div>
+        <div id="complianceResult"></div>
+      </div>
+    </div>
+
+    <div id="tabPanelApplications" class="tab-panel" role="tabpanel" aria-labelledby="tabBtnApplications" hidden>
+      <div class="card">
+        <h2>Intune Applications</h2>
+        <div class="toolbar">
+          <button id="loadAppsBtn" type="button">Load / Refresh Applications</button>
+          <label class="checkbox-label"><input type="checkbox" id="patchMyPcOnlyFilter" /> Show only Patch My PC applications</label>
+          <span class="muted">Lists every application in this tenant's Intune app catalog. Applications deployed by Patch My PC are detected from their install command containing "PatchMyPC-ScriptRunner.exe".</span>
+        </div>
+        <div class="status-line" id="appsStatus" role="status" aria-live="polite"></div>
+        <div id="appsResult"></div>
+      </div>
     </div>
   </div>
 </main>
@@ -743,6 +776,134 @@ async function toggleDeviceApps(btn) {
   } catch (err) {
     appsEl.innerHTML = `<span class="error">Failed to load applications: ${escapeHtml(err.message)}</span>`;
   }
+}
+
+/* =========================================================================
+   5. TAB NAVIGATION
+   ========================================================================= */
+const tabs = [
+  { btn: document.getElementById("tabBtnCompliance"), panel: document.getElementById("tabPanelCompliance") },
+  { btn: document.getElementById("tabBtnApplications"), panel: document.getElementById("tabPanelApplications") }
+];
+tabs.forEach(({ btn, panel }) => {
+  btn.addEventListener("click", () => {
+    tabs.forEach(({ btn: b, panel: p }) => {
+      const isActive = b === btn;
+      b.setAttribute("aria-selected", String(isActive));
+      p.classList.toggle("active", isActive);
+      p.hidden = !isActive;
+    });
+  });
+});
+
+/* =========================================================================
+   6. APPLICATIONS TAB
+   -------------------------------------------------------------------------
+   Lists every application in the tenant's Intune app catalog (deviceApp
+   Management/mobileApps — a polymorphic collection covering Win32 apps,
+   store apps, Office apps, etc.). Only Win32 apps carry an install
+   command line, so we separately fetch that subset (via $filter=isof(...))
+   and flag an app as "created by Patch My PC" when its install command
+   references PatchMyPC-ScriptRunner.exe — the wrapper executable Patch My
+   PC's Win32 app packages use to invoke their update scripts.
+   ========================================================================= */
+const loadAppsBtn = document.getElementById("loadAppsBtn");
+const appsStatus = document.getElementById("appsStatus");
+const appsResult = document.getElementById("appsResult");
+const patchMyPcOnlyFilter = document.getElementById("patchMyPcOnlyFilter");
+
+let allApps = null; // cached, re-rendered on filter change without refetching
+
+loadAppsBtn.addEventListener("click", loadApplications);
+patchMyPcOnlyFilter.addEventListener("change", renderApplicationsTable);
+
+// Maps an "@odata.type" value like "#microsoft.graph.win32LobApp" to a
+// short, human-readable app type label (e.g. "Win32").
+function odataTypeToFriendly(odataType) {
+  if (!odataType) return "Unknown";
+  const shortName = odataType.split(".").pop().replace(/App$/, "") || "App";
+  return shortName.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/^./, (c) => c.toUpperCase());
+}
+
+async function loadApplications() {
+  loadAppsBtn.disabled = true;
+  appsStatus.textContent = "Loading Intune applications...";
+  appsResult.innerHTML = "";
+
+  try {
+    // Base fields exist on every app type; installCommandLine only exists
+    // on win32LobApp, so it needs a separate, type-filtered request.
+    const [apps, win32Apps] = await Promise.all([
+      graphGetAll(
+        "https://graph.microsoft.com/v1.0/deviceAppManagement/mobileApps" +
+        "?$select=id,displayName,publisher,createdDateTime&$top=999"
+      ),
+      graphGetAll(
+        "https://graph.microsoft.com/v1.0/deviceAppManagement/mobileApps" +
+        "?$filter=isof('microsoft.graph.win32LobApp')&$select=id,installCommandLine&$top=999"
+      )
+    ]);
+
+    const installCommandById = new Map(win32Apps.map((a) => [a.id, a.installCommandLine || ""]));
+
+    allApps = apps.map((a) => ({
+      id: a.id,
+      displayName: a.displayName || "(unnamed)",
+      publisher: a.publisher || "",
+      type: odataTypeToFriendly(a["@odata.type"]),
+      createdDateTime: a.createdDateTime,
+      isPatchMyPc: /patchmypc-scriptrunner\.exe/i.test(installCommandById.get(a.id) || "")
+    }));
+    allApps.sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+    const patchMyPcCount = allApps.filter((a) => a.isPatchMyPc).length;
+    appsStatus.textContent = `Last updated: ${new Date().toLocaleString()} — ${allApps.length} applications (${patchMyPcCount} created by Patch My PC).`;
+    renderApplicationsTable();
+  } catch (err) {
+    console.error(err);
+    appsStatus.innerHTML = `<span class="error">Failed to load applications: ${escapeHtml(err.message)}</span>`;
+  } finally {
+    loadAppsBtn.disabled = false;
+  }
+}
+
+function renderApplicationsTable() {
+  if (!allApps) return;
+  const rows = patchMyPcOnlyFilter.checked ? allApps.filter((a) => a.isPatchMyPc) : allApps;
+
+  if (rows.length === 0) {
+    appsResult.innerHTML = "<p class='muted' style='padding:16px'>No applications match the current filter.</p>";
+    return;
+  }
+
+  let html = `<table>
+    <thead>
+      <tr>
+        <th>Application</th>
+        <th>Publisher</th>
+        <th>Type</th>
+        <th>Created</th>
+        <th>Patch My PC</th>
+      </tr>
+    </thead>
+    <tbody>`;
+
+  rows.forEach((a) => {
+    const created = a.createdDateTime ? new Date(a.createdDateTime).toLocaleDateString() : "–";
+    const badge = a.isPatchMyPc
+      ? '<span class="badge ok">Patch My PC</span>'
+      : '<span class="badge unknown">Manual</span>';
+    html += `<tr>
+      <td>${escapeHtml(a.displayName)}</td>
+      <td>${escapeHtml(a.publisher)}</td>
+      <td>${escapeHtml(a.type)}</td>
+      <td>${created}</td>
+      <td>${badge}</td>
+    </tr>`;
+  });
+
+  html += "</tbody></table>";
+  appsResult.innerHTML = html;
 }
 </script>
 </body>
