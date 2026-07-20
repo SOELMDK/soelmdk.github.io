@@ -378,9 +378,13 @@ async function graphGetAll(url, scopes = SCOPES) {
    that is SUPPORTED by Patch My PC's catalog — regardless of whether you
    currently manage/patch it through Patch My PC.
 
-   Uses ./patchmypc-catalog.json — a slim, pre-extracted catalog built from
-   Patch My PC's own SCUP/WSUS-style PatchMyPC.xml export by
-   build-patchmypc-catalog.ps1. That script pulls, per product:
+   Uses a slim, pre-extracted catalog built from Patch My PC's own
+   SCUP/WSUS-style PatchMyPC.xml export by build-patchmypc-catalog.ps1,
+   hosted at CATALOG_URL (an Azure Blob Storage container) instead of a
+   local file, so the catalog can be refreshed independently of this page
+   and shared across deployments (this page is served from GitHub Pages,
+   which has no server-side build step of its own). That script pulls,
+   per product:
      - the product name + version out of each package's <sdp:Title> (e.g.
        "Microsoft OneDrive 26.113.0614.0004 (x64)"), and
      - its installed-app name-matching rule(s) (the <bar:RegSz Value="
@@ -389,19 +393,26 @@ async function graphGetAll(url, scopes = SCOPES) {
    Packages are grouped by product name (splitting into separate per-
    architecture products only where the matching rule itself is arch-
    specific); the highest version seen across a product's packages is its
-   "latest version". Re-run build-patchmypc-catalog.ps1 whenever
-   PatchMyPC.xml is updated — this JSON is a build artifact, not a live
-   parse of the XML (done for performance: ~15.7 MB XML -> ~450 KB JSON,
-   avoiding a multi-second DOM parse of the full catalog on every page
-   load).
+   "latest version". Re-run build-patchmypc-catalog.ps1 and re-upload the
+   output whenever PatchMyPC.xml is updated — this JSON is a build
+   artifact, not a live parse of the XML (done for performance: ~15.7 MB
+   XML -> ~450 KB JSON, avoiding a multi-second DOM parse of the full
+   catalog on every page load).
+
+   NOTE: the blob container must have CORS configured to allow this page's
+   origin (GET, header "*" or at least "Content-Type") or the browser will
+   block the fetch with a CORS error despite the blob being publicly
+   readable.
    ========================================================================= */
+const CATALOG_URL = "https://sapublicsoelmsandbox.blob.core.windows.net/patchmypc-catalog/patchmypc-catalog.json";
+
 let patchMyPcCatalog = null;
 
 async function loadCatalog() {
   if (patchMyPcCatalog) return patchMyPcCatalog;
-  const resp = await fetch("./patchmypc-catalog.json");
+  const resp = await fetch(CATALOG_URL);
   if (!resp.ok) {
-    throw new Error(`Could not load patchmypc-catalog.json (${resp.status}). Run build-patchmypc-catalog.ps1 to generate it.`);
+    throw new Error(`Could not load patchmypc-catalog.json from blob storage (${resp.status}). Run build-patchmypc-catalog.ps1 and re-upload it.`);
   }
   patchMyPcCatalog = await resp.json();
   return patchMyPcCatalog;
