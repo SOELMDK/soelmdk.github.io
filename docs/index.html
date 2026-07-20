@@ -832,7 +832,11 @@ async function loadApplications() {
 
   try {
     // Base fields exist on every app type; installCommandLine only exists
-    // on win32LobApp, so it needs a separate, type-filtered request.
+    // on win32LobApp, so it needs a separate, type-filtered request. Graph
+    // requires derived-type properties in $select to be qualified with a
+    // type-cast segment (microsoft.graph.win32LobApp/installCommandLine) —
+    // selecting the bare property name fails because the collection's
+    // declared type is the base "mobileApp", which has no such property.
     const [apps, win32Apps] = await Promise.all([
       graphGetAll(
         "https://graph.microsoft.com/v1.0/deviceAppManagement/mobileApps" +
@@ -840,7 +844,7 @@ async function loadApplications() {
       ),
       graphGetAll(
         "https://graph.microsoft.com/v1.0/deviceAppManagement/mobileApps" +
-        "?$filter=isof('microsoft.graph.win32LobApp')&$select=id,installCommandLine&$top=999"
+        "?$filter=isof('microsoft.graph.win32LobApp')&$select=id,microsoft.graph.win32LobApp/installCommandLine&$top=999"
       )
     ]);
 
