@@ -165,6 +165,7 @@
   .device-apps-list .app-name { color: var(--ink); }
   .device-apps-list .app-version { color: var(--muted); text-align: right; }
   .device-apps-list .app-details { color: var(--muted); text-align: right; }
+  .app-source-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 6px; cursor: default; }
 
   .version-chip { font-size: 13px; font-weight: 500; }
   .version-chip.ok { color: var(--ok); }
@@ -759,20 +760,32 @@ async function toggleDeviceApps(btn) {
   appsEl.innerHTML = "<span class='muted'>Loading installed applications…</span>";
 
   try {
-    appsEl.innerHTML = await loadAppInventoryHtml(deviceId);
+    const html = await loadAppInventoryHtml(deviceId);
+    appsEl.innerHTML = sourceLabel("App Inventory") + html;
   } catch (inventoryErr) {
     // App inventory data isn't available for every device (it requires a
     // Properties catalog policy to be assigned and the device to have
-    // checked in since). Fall back to "Discovered apps" (detectedApps),
-    // the older Graph-exposed per-device app source, so the drill-down
-    // still shows something useful.
+    // checked in since). Log the real reason so it's visible in devtools
+    // instead of silently swallowed, then fall back to "Discovered apps"
+    // (detectedApps), the older Graph-exposed per-device app source, so
+    // the drill-down still shows something useful.
+    console.warn(`App inventory unavailable for device ${deviceId}, falling back to detectedApps:`, inventoryErr);
     try {
-      appsEl.innerHTML = await loadDetectedAppsHtml(deviceId);
+      const html = await loadDetectedAppsHtml(deviceId);
+      appsEl.innerHTML = sourceLabel("Discovered apps (fallback)", inventoryErr.message) + html;
     } catch (fallbackErr) {
       appsEl.innerHTML = `<span class="error">Failed to load applications: ${escapeHtml(fallbackErr.message)}</span>`;
     }
   }
   appsEl.dataset.loaded = "true";
+}
+
+// Small badge shown above the app list so it's obvious which Graph source
+// produced the data (App Inventory vs. the detectedApps fallback), with
+// the fallback reason available on hover for debugging.
+function sourceLabel(text, title) {
+  const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
+  return `<div class="app-source-label"${titleAttr}>Source: ${escapeHtml(text)}</div>`;
 }
 
 // Real endpoint the Intune admin center's device "All Apps > App
