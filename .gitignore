@@ -1,0 +1,8 @@
+# Patch My PC's full SCUP/WSUS catalog export (~16 MB) used as the source
+# for Util/build-patchmypc-catalog.js — too large/churny to track in git.
+# Re-export it from Patch My PC and place it at Util/PatchMyPC.xml before
+# running the build script; only the derived patchmypc-catalog.json is
+# committed.
+Util/PatchMyPC.xml
+
+node_modules/
