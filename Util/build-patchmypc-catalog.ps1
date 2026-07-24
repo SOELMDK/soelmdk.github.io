@@ -1,20 +1,5 @@
 <#
 .SYNOPSIS
-  DEPRECATED — superseded by build-patchmypc-catalog.js (Node.js).
-
-  PowerShell functions silently unwrap/flatten nested single-element
-  arrays on `return`, which made the recursive And/Or/Not distribution
-  needed to correctly extract DisplayName matcher groups unreliable
-  (a rewrite of Get-DisplayNameAlternatives to fix a Miro/Loom/GIMP-class
-  bug here regressed to producing almost no products at all, due to that
-  array-flattening behavior). Plain JS arrays don't have that footgun, so
-  the logic was ported to build-patchmypc-catalog.js, which is now the
-  canonical build script. This file is kept for reference only — do not
-  use it to regenerate patchmypc-catalog.json.
-
-  Original synopsis follows.
-
-.SYNOPSIS
   Builds a slim patchmypc-catalog.json from Patch My PC's full PatchMyPC.xml
   SCUP/WSUS catalog export, for the Intune compliance report page to load
   instead of parsing the full ~16 MB XML file in the browser.
@@ -108,74 +93,122 @@ function Get-Arch([string]$Suffix) {
   return $null
 }
 
-# Mirrors extractDisplayNameGroups(): builds one matcher group per
-# RegKeyLoop, but respects <lar:Or> vs <lar:And> nesting instead of
-# flattening every DisplayName condition into a single AND group.
-# Patch My PC rules commonly wrap alternative DisplayName spellings (e.g.
-# "Notepad++" vs "Notepad++ (x64)") in a <lar:Or>, meaning EITHER can
-# match — AND-ing them together (the previous behavior) produced a
-# matcher group that could never be satisfied (a display name can't equal
-# two different strings at once), silently hiding those products/variants
-# from the compliance report.
-function Get-DisplayNameGroups([System.Xml.XmlNode]$Package) {
-  $groups = @()
-  foreach ($loop in (Get-ByLocalName $Package "RegKeyLoop")) {
-    # DisplayName RegSz conditions nested (at any depth) inside an <Or>
-    # are alternatives, not AND-combined requirements. Any DisplayName
-    # RegSz elsewhere in the loop (outside all Or blocks) must still hold
-    # true alongside whichever alternative matched, so it's carried into
-    # every resulting group as a base condition.
-    $orNodes = Get-ByLocalName $loop "Or"
-    $orConditionNodes = New-Object System.Collections.Generic.HashSet[System.Xml.XmlNode]
-    $orAlternativeGroups = @()
-    foreach ($orNode in $orNodes) {
-      $alternatives = @()
-      foreach ($regSz in (Get-ByLocalName $orNode "RegSz")) {
-        if ($regSz.Value -eq "DisplayName" -and $regSz.Data) {
-          [void]$orConditionNodes.Add($regSz)
-          $alternatives += [PSCustomObject]@{ comparison = $regSz.Comparison; data = $regSz.Data }
+# Recursively evaluates a subtree for its DisplayName-matching semantics,
+# returning a list of "alternative" condition groups: each group is a
+# list of {comparison, data} conditions that must ALL be true (AND); the
+# groups themselves are OR alternatives (any one group matching is
+# enough). This correctly distributes AND over OR (e.g. an <lar:And>
+# containing an <lar:Or> produces one alternative group per Or branch,
+# each still combined with the And's other conditions) instead of
+# flattening everything into a single AND group regardless of nesting.
+#
+# IMPORTANT: the return value is always wrapped in a single-property
+# [PSCustomObject] (`.Items`), never a bare array/List. PowerShell's
+# pipeline/`return` auto-enumerates and silently flattens nested
+# collections (a List[object] of List[object] can come back one level
+# too flat, or fully collapsed, depending on element counts) — wrapping
+# in a scalar object sidesteps that entirely, since PSCustomObject isn't
+# itself enumerable. An earlier version of this function returned bare
+# nested arrays/lists directly and, despite looking correct in isolated
+# tests, silently collapsed to near-empty results across the full
+# recursion depth of real package rules (regenerating almost no
+# products). Do not "simplify" this back to bare array returns without
+# re-testing against the full PatchMyPC.xml (expect ~2247 products).
+#
+# - RegSz (Value=DisplayName): one alternative, a single-condition group.
+# - Any other leaf element (RegSzToVersion, RegDword, WindowsVersion,
+#   etc.): contributes no DisplayName info, i.e. the identity element
+#   (one alternative with an empty condition list) so it doesn't affect
+#   AND-combination with its siblings.
+# - Not: dropped entirely (see rationale below) — also the identity
+#   element.
+# - Or: the union of its children's alternatives (OR).
+# - And / RegKeyLoop: the cross-product of its children's alternatives,
+#   concatenating conditions within each combination (AND).
+function Get-DisplayNameAlternatives([System.Xml.XmlNode]$Node) {
+  switch ($Node.LocalName) {
+    "RegSz" {
+      $alternatives = [System.Collections.Generic.List[object]]::new()
+      if ($Node.Value -eq "DisplayName" -and $Node.Data) {
+        $group = [System.Collections.Generic.List[object]]::new()
+        $group.Add([PSCustomObject]@{ comparison = $Node.Comparison; data = $Node.Data })
+        $alternatives.Add($group)
+      } else {
+        $alternatives.Add([System.Collections.Generic.List[object]]::new())
+      }
+      return [PSCustomObject]@{ Items = $alternatives }
+    }
+    "Not" {
+      # DisplayName conditions nested inside <lar:Not> are exclusions
+      # (e.g. "Bria" AND NOT "Bria Enterprise", to keep the Enterprise
+      # SKU's own product from also matching plain "Bria"). Since
+      # EqualTo/BeginsWith/etc. conditions can never simultaneously equal
+      # two different strings, a negated DisplayName check never actually
+      # changes whether an unrelated positive check matches — so these
+      # are dropped entirely (identity) rather than folded in as
+      # impossible positive requirements.
+      $alternatives = [System.Collections.Generic.List[object]]::new()
+      $alternatives.Add([System.Collections.Generic.List[object]]::new())
+      return [PSCustomObject]@{ Items = $alternatives }
+    }
+    "Or" {
+      $alternatives = [System.Collections.Generic.List[object]]::new()
+      foreach ($child in $Node.ChildNodes) {
+        if ($child.NodeType -ne [System.Xml.XmlNodeType]::Element) { continue }
+        $childResult = Get-DisplayNameAlternatives $child
+        foreach ($alt in $childResult.Items) { $alternatives.Add($alt) }
+      }
+      if ($alternatives.Count -eq 0) { $alternatives.Add([System.Collections.Generic.List[object]]::new()) }
+      return [PSCustomObject]@{ Items = $alternatives }
+    }
+    default {
+      # And, RegKeyLoop, or anything else with children: AND-combine via
+      # cross-product so nested Or branches are distributed correctly
+      # instead of flattened away.
+      $accumulated = [System.Collections.Generic.List[object]]::new()
+      $accumulated.Add([System.Collections.Generic.List[object]]::new()) # identity: one empty alternative
+      foreach ($child in $Node.ChildNodes) {
+        if ($child.NodeType -ne [System.Xml.XmlNodeType]::Element) { continue }
+        $childResult = Get-DisplayNameAlternatives $child
+        $combined = [System.Collections.Generic.List[object]]::new()
+        foreach ($existing in $accumulated) {
+          foreach ($alt in $childResult.Items) {
+            $newGroup = [System.Collections.Generic.List[object]]::new()
+            $newGroup.AddRange($existing)
+            $newGroup.AddRange($alt)
+            $combined.Add($newGroup)
+          }
         }
+        $accumulated = $combined
       }
-      if ($alternatives.Count -gt 0) { $orAlternativeGroups += (,$alternatives) }
-    }
-
-    # DisplayName RegSz conditions nested inside <lar:Not> are exclusions
-    # (e.g. "Bria" AND NOT "Bria Enterprise", to keep the Enterprise SKU's
-    # own product from also matching plain "Bria"). Since EqualTo/
-    # BeginsWith/etc. conditions can never simultaneously equal two
-    # different strings, a negated DisplayName check never actually
-    # changes whether an unrelated positive check matches — so these are
-    # dropped entirely rather than folded in as impossible positive
-    # requirements.
-    $notNodes = Get-ByLocalName $loop "Not"
-    $notConditionNodes = New-Object System.Collections.Generic.HashSet[System.Xml.XmlNode]
-    foreach ($notNode in $notNodes) {
-      foreach ($regSz in (Get-ByLocalName $notNode "RegSz")) {
-        [void]$notConditionNodes.Add($regSz)
-      }
-    }
-
-    $baseConditions = @()
-    foreach ($regSz in (Get-ByLocalName $loop "RegSz")) {
-      if ($regSz.Value -eq "DisplayName" -and $regSz.Data -and
-          -not $orConditionNodes.Contains($regSz) -and -not $notConditionNodes.Contains($regSz)) {
-        $baseConditions += [PSCustomObject]@{ comparison = $regSz.Comparison; data = $regSz.Data }
-      }
-    }
-
-    if ($orAlternativeGroups.Count -eq 0) {
-      if ($baseConditions.Count -gt 0) { $groups += (,$baseConditions) }
-    } else {
-      # One group per alternative (per Or block), each combined with the
-      # base (non-Or) conditions that must always hold true.
-      foreach ($alternatives in $orAlternativeGroups) {
-        foreach ($alt in $alternatives) {
-          $groups += (,(@($baseConditions) + @($alt)))
-        }
-      }
+      return [PSCustomObject]@{ Items = $accumulated }
     }
   }
-  return $groups
+}
+
+# Mirrors extractDisplayNameGroups(): builds matcher groups per
+# RegKeyLoop by evaluating its And/Or/Not structure (via
+# Get-DisplayNameAlternatives) instead of flattening every DisplayName
+# condition in the loop into one AND group. Patch My PC rules commonly
+# wrap alternative DisplayName spellings (e.g. "Notepad++" vs
+# "Notepad++ (x64)", or "Miro" vs "Miro X.Y.Z") in a <lar:Or> — sometimes
+# with one branch itself being an <lar:And> of multiple conditions (e.g.
+# "BeginsWith 'Miro ' AND Contains '.'"). Flattening ignored that nesting
+# and either produced impossible AND groups (conditions that can never
+# both be true, silently hiding the product) or, if the Or branches were
+# split without preserving their internal And-grouping, overly broad
+# standalone conditions (e.g. a lone "Contains '.'" matching almost any
+# app with a version number in its name, wrongly attributing unrelated
+# installs to this product).
+function Get-DisplayNameGroups([System.Xml.XmlNode]$Package) {
+  $groups = [System.Collections.Generic.List[object]]::new()
+  foreach ($loop in (Get-ByLocalName $Package "RegKeyLoop")) {
+    $result = Get-DisplayNameAlternatives $loop
+    foreach ($alternative in $result.Items) {
+      if ($alternative.Count -gt 0) { $groups.Add($alternative) }
+    }
+  }
+  return [PSCustomObject]@{ Items = $groups }
 }
 
 # Mirrors matcherReferencesArch(): true if any DisplayName condition
@@ -215,7 +248,7 @@ foreach ($pkg in $packages) {
   $parsed = Parse-Title $titleEl.InnerText.Trim()
   if (-not $parsed.Name) { continue }
 
-  $groups = Get-DisplayNameGroups $pkg
+  $groups = (Get-DisplayNameGroups $pkg).Items
   if ($groups.Count -eq 0) { continue } # no way to match installed apps to this package
 
   $arch = Get-Arch $parsed.Suffix

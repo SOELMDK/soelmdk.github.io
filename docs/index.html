@@ -414,11 +414,7 @@ async function graphGetAll(url, scopes = SCOPES) {
    currently manage/patch it through Patch My PC.
 
    Uses a slim, pre-extracted catalog built from Patch My PC's own
-   SCUP/WSUS-style PatchMyPC.xml export by Util/build-patchmypc-catalog.js
-   (Node.js — PowerShell's array-return semantics silently unwrap nested
-   single-element arrays, which made the recursive And/Or/Not matcher
-   logic unreliable; the old build-patchmypc-catalog.ps1 is kept for
-   reference only, superseded by the .js version),
+   SCUP/WSUS-style PatchMyPC.xml export by Util/build-patchmypc-catalog.ps1,
    hosted at CATALOG_URL (an Azure Blob Storage container) instead of a
    local file, so the catalog can be refreshed independently of this page
    and shared across deployments (this page is served from GitHub Pages,
@@ -432,7 +428,7 @@ async function graphGetAll(url, scopes = SCOPES) {
    Packages are grouped by product name (splitting into separate per-
    architecture products only where the matching rule itself is arch-
    specific); the highest version seen across a product's packages is its
-   "latest version". Re-run `node Util/build-patchmypc-catalog.js` and
+   "latest version". Re-run `Util\build-patchmypc-catalog.ps1` and
    re-upload the output whenever PatchMyPC.xml is updated — this JSON is
    a build artifact, not a live parse of the XML (done for performance:
    ~15.7 MB XML -> ~450 KB JSON, avoiding a multi-second DOM parse of the
@@ -451,7 +447,7 @@ async function loadCatalog() {
   if (patchMyPcCatalog) return patchMyPcCatalog;
   const resp = await fetch(CATALOG_URL);
   if (!resp.ok) {
-    throw new Error(`Could not load patchmypc-catalog.json from blob storage (${resp.status}). Run Util/build-patchmypc-catalog.js and re-upload it.`);
+    throw new Error(`Could not load patchmypc-catalog.json from blob storage (${resp.status}). Run Util/build-patchmypc-catalog.ps1 and re-upload it.`);
   }
   patchMyPcCatalog = await resp.json();
   return patchMyPcCatalog;
