@@ -1,0 +1,54 @@
+name: Update Patch My PC catalog
+
+# Rebuilds docs/patchmypc-catalog.json (used by the Patch My PC Patch
+# Compliance Overview tab in docs/index.html) from Patch My PC's own
+# feeds, and commits the result if it changed. See
+# Util/build-patchmypc-catalog.ps1 for the full build logic.
+on:
+  schedule:
+    # 03:00 UTC daily.
+    - cron: "0 3 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  update-catalog:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download PatchMyPC.xml catalog (CAB)
+        shell: pwsh
+        env:
+          PATCHMYPC_CAB_URL: ${{ secrets.PATCHMYPC_CAB_URL }}
+        run: |
+          if (-not $env:PATCHMYPC_CAB_URL) {
+            throw "Missing PATCHMYPC_CAB_URL secret. Add it in repo Settings > Secrets and variables > Actions."
+          }
+          Invoke-WebRequest -Uri $env:PATCHMYPC_CAB_URL -OutFile "$env:RUNNER_TEMP\patchmypc.cab" -UseBasicParsing
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP\patchmypc-extracted" -Force | Out-Null
+          # expand.exe is built into Windows and can pull a single named
+          # file out of a CAB without extracting everything else in it.
+          expand.exe -F:PatchMyPC.xml "$env:RUNNER_TEMP\patchmypc.cab" "$env:RUNNER_TEMP\patchmypc-extracted"
+          Copy-Item "$env:RUNNER_TEMP\patchmypc-extracted\PatchMyPC.xml" "Util\PatchMyPC.xml" -Force
+
+      - name: Rebuild patchmypc-catalog.json
+        shell: pwsh
+        run: .\Util\build-patchmypc-catalog.ps1
+
+      - name: Commit and push if changed
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/patchmypc-catalog.json
+          $changed = git status --porcelain -- docs/patchmypc-catalog.json
+          if ($changed) {
+            git commit -m "Update patchmypc-catalog.json [skip ci]"
+            git push
+          } else {
+            Write-Host "No changes to docs/patchmypc-catalog.json — nothing to commit."
+          }
