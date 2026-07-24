@@ -43,10 +43,14 @@
 
 .NOTES
   Output: docs/patchmypc-catalog.json — an array of
-    { id, name, vendor, include, excludes: [ ... ], latestVersion }
+    { id, name, vendor, include, excludes: [ ... ], latestVersion, releaseDate }
   `include`/`excludes` are raw SQL-LIKE patterns (% = any chars, _ = any
   single char) — convert with the same likeToRegex() logic as
   intune-signin.html before matching against a detected app's DisplayName.
+  `releaseDate` is the ISO 8601 CreationDate (from PatchMyPC.xml's
+  <Properties> element) of the WSUS package that matched `latestVersion` —
+  i.e. when Patch My PC published that version — or null if latestVersion
+  is null.
 #>
 
 param(
@@ -163,18 +167,27 @@ foreach ($titleEl in $titleNodes) {
   $version = Parse-TitleVersion $title
   $arch = Get-ArchSuffix $title
 
+  # CreationDate lives on the ancestor package's <Properties> element —
+  # this is when Patch My PC published this specific package/version,
+  # which we surface in the report as each product's "release date".
+  $pkg = $titleEl.ParentNode.ParentNode
+  $props = $pkg.SelectSingleNode("*[local-name()='Properties']")
+  $releaseDate = if ($props -and $props.CreationDate) { $props.CreationDate } else { $null }
+
   $key = $name.ToLowerInvariant()
   if (-not $wsusVersionsByName.Contains($key)) {
-    $wsusVersionsByName[$key] = [PSCustomObject]@{ Name = $name; Version = $version }
+    $wsusVersionsByName[$key] = [PSCustomObject]@{ Name = $name; Version = $version; ReleaseDate = $releaseDate }
   } elseif ((Compare-Versions $version $wsusVersionsByName[$key].Version) -gt 0) {
     $wsusVersionsByName[$key].Version = $version
+    $wsusVersionsByName[$key].ReleaseDate = $releaseDate
   }
 
   $archKey = "$key|$arch"
   if (-not $wsusVersionsByNameArch.Contains($archKey)) {
-    $wsusVersionsByNameArch[$archKey] = $version
-  } elseif ((Compare-Versions $version $wsusVersionsByNameArch[$archKey]) -gt 0) {
-    $wsusVersionsByNameArch[$archKey] = $version
+    $wsusVersionsByNameArch[$archKey] = [PSCustomObject]@{ Version = $version; ReleaseDate = $releaseDate }
+  } elseif ((Compare-Versions $version $wsusVersionsByNameArch[$archKey].Version) -gt 0) {
+    $wsusVersionsByNameArch[$archKey].Version = $version
+    $wsusVersionsByNameArch[$archKey].ReleaseDate = $releaseDate
   }
 }
 $wsusEntries = $wsusVersionsByName.Values
@@ -205,6 +218,7 @@ foreach ($vendor in $spXml.SupportedProducts.Vendor) {
         include       = $includePattern
         excludes      = @($excludes)
         latestVersion = $null
+        releaseDate   = $null
       })
   }
 }
@@ -217,6 +231,7 @@ foreach ($product in $catalog) {
   $excludeRxs = $product.excludes | ForEach-Object { Convert-LikeToRegex $_ }
 
   $latest = $null
+  $latestReleaseDate = $null
   foreach ($entry in $wsusEntries) {
     if (-not $includeRx.IsMatch($entry.Name)) { continue }
     $excluded = $false
@@ -224,10 +239,14 @@ foreach ($product in $catalog) {
       if ($rx.IsMatch($entry.Name)) { $excluded = $true; break }
     }
     if ($excluded) { continue }
-    if ((Compare-Versions $entry.Version $latest) -gt 0) { $latest = $entry.Version }
+    if ((Compare-Versions $entry.Version $latest) -gt 0) {
+      $latest = $entry.Version
+      $latestReleaseDate = $entry.ReleaseDate
+    }
   }
   if ($latest) {
     $product.latestVersion = $latest
+    $product.releaseDate = $latestReleaseDate
     $matchedCount++
   }
 }
@@ -249,14 +268,15 @@ foreach ($product in $catalog) {
   $arch = Get-ArchSuffix $product.name
   $key = $baseName.ToLowerInvariant()
 
-  $latest = $wsusVersionsByNameArch["$key|$arch"]
-  if (-not $latest -and $arch) {
+  $entry = $wsusVersionsByNameArch["$key|$arch"]
+  if (-not $entry -and $arch) {
     # No exact arch-specific WSUS entry — try the arch-less bucket too,
     # in case this product isn't actually split by architecture upstream.
-    $latest = $wsusVersionsByNameArch["$key|"]
+    $entry = $wsusVersionsByNameArch["$key|"]
   }
-  if ($latest) {
-    $product.latestVersion = $latest
+  if ($entry -and $entry.Version) {
+    $product.latestVersion = $entry.Version
+    $product.releaseDate = $entry.ReleaseDate
     $fallbackMatchedCount++
   }
 }
@@ -272,6 +292,7 @@ $output = $catalog | ForEach-Object {
     include       = $_.include
     excludes      = $_.excludes
     latestVersion = $_.latestVersion
+    releaseDate   = $_.releaseDate
   }
 }
 

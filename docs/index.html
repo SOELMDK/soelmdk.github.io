@@ -560,7 +560,8 @@ async function loadComplianceReport() {
           vendor: product.vendor,
           detectedNames: new Set(),
           versions: [], // { detectedAppId, version, deviceCount }
-          latestVersion: product.latestVersion || "–"
+          latestVersion: product.latestVersion || "–",
+          releaseDate: product.releaseDate || null
         };
         productRows.set(product.id, row);
       }
@@ -636,6 +637,7 @@ function renderComplianceTable(rows) {
         <th>Installed Version</th>
         <th>Devices</th>
         <th>Latest Version</th>
+        <th>Released</th>
         <th>Status</th>
       </tr>
     </thead>
@@ -670,9 +672,10 @@ function renderComplianceTable(rows) {
       <td>${versionCell}</td>
       <td>${r.deviceCount}</td>
       <td>${r.latestVersion === "–" ? `<span class="muted" title="This product's catalog entry did not contain a parseable version number, so no compliance verdict can be shown.">–</span>` : escapeHtml(r.latestVersion)}</td>
+      <td>${formatReleaseDate(r.releaseDate)}</td>
       <td>${badge}</td>
     </tr>
-    <tr class="device-row" data-row-for="${idx}" style="display:none"><td colspan="7"><div class="device-list">Loading devices...</div></td></tr>`;
+    <tr class="device-row" data-row-for="${idx}" style="display:none"><td colspan="8"><div class="device-list">Loading devices...</div></td></tr>`;
   });
 
   html += "</tbody></table>";
@@ -688,6 +691,17 @@ function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
   }[c]));
+}
+
+// Formats a catalog product's releaseDate (ISO 8601, from PatchMyPC.xml's
+// package CreationDate) as a short local date, e.g. "14 Jul 2026". Returns
+// "–" when unknown so it renders consistently with the other "unknown"
+// cells in this table.
+function formatReleaseDate(releaseDate) {
+  if (!releaseDate) return "–";
+  const d = new Date(releaseDate);
+  if (isNaN(d.getTime())) return "–";
+  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
 async function toggleDeviceList(tr) {
