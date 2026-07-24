@@ -93,18 +93,72 @@ function Get-Arch([string]$Suffix) {
   return $null
 }
 
-# Mirrors extractDisplayNameGroups(): each RegKeyLoop's DisplayName
-# conditions form one AND-combined matcher group.
+# Mirrors extractDisplayNameGroups(): builds one matcher group per
+# RegKeyLoop, but respects <lar:Or> vs <lar:And> nesting instead of
+# flattening every DisplayName condition into a single AND group.
+# Patch My PC rules commonly wrap alternative DisplayName spellings (e.g.
+# "Notepad++" vs "Notepad++ (x64)") in a <lar:Or>, meaning EITHER can
+# match — AND-ing them together (the previous behavior) produced a
+# matcher group that could never be satisfied (a display name can't equal
+# two different strings at once), silently hiding those products/variants
+# from the compliance report.
 function Get-DisplayNameGroups([System.Xml.XmlNode]$Package) {
   $groups = @()
   foreach ($loop in (Get-ByLocalName $Package "RegKeyLoop")) {
-    $conditions = @()
-    foreach ($regSz in (Get-ByLocalName $loop "RegSz")) {
-      if ($regSz.Value -eq "DisplayName" -and $regSz.Data) {
-        $conditions += [PSCustomObject]@{ comparison = $regSz.Comparison; data = $regSz.Data }
+    # DisplayName RegSz conditions nested (at any depth) inside an <Or>
+    # are alternatives, not AND-combined requirements. Any DisplayName
+    # RegSz elsewhere in the loop (outside all Or blocks) must still hold
+    # true alongside whichever alternative matched, so it's carried into
+    # every resulting group as a base condition.
+    $orNodes = Get-ByLocalName $loop "Or"
+    $orConditionNodes = New-Object System.Collections.Generic.HashSet[System.Xml.XmlNode]
+    $orAlternativeGroups = @()
+    foreach ($orNode in $orNodes) {
+      $alternatives = @()
+      foreach ($regSz in (Get-ByLocalName $orNode "RegSz")) {
+        if ($regSz.Value -eq "DisplayName" -and $regSz.Data) {
+          [void]$orConditionNodes.Add($regSz)
+          $alternatives += [PSCustomObject]@{ comparison = $regSz.Comparison; data = $regSz.Data }
+        }
+      }
+      if ($alternatives.Count -gt 0) { $orAlternativeGroups += (,$alternatives) }
+    }
+
+    # DisplayName RegSz conditions nested inside <lar:Not> are exclusions
+    # (e.g. "Bria" AND NOT "Bria Enterprise", to keep the Enterprise SKU's
+    # own product from also matching plain "Bria"). Since EqualTo/
+    # BeginsWith/etc. conditions can never simultaneously equal two
+    # different strings, a negated DisplayName check never actually
+    # changes whether an unrelated positive check matches — so these are
+    # dropped entirely rather than folded in as impossible positive
+    # requirements.
+    $notNodes = Get-ByLocalName $loop "Not"
+    $notConditionNodes = New-Object System.Collections.Generic.HashSet[System.Xml.XmlNode]
+    foreach ($notNode in $notNodes) {
+      foreach ($regSz in (Get-ByLocalName $notNode "RegSz")) {
+        [void]$notConditionNodes.Add($regSz)
       }
     }
-    if ($conditions.Count -gt 0) { $groups += (,$conditions) }
+
+    $baseConditions = @()
+    foreach ($regSz in (Get-ByLocalName $loop "RegSz")) {
+      if ($regSz.Value -eq "DisplayName" -and $regSz.Data -and
+          -not $orConditionNodes.Contains($regSz) -and -not $notConditionNodes.Contains($regSz)) {
+        $baseConditions += [PSCustomObject]@{ comparison = $regSz.Comparison; data = $regSz.Data }
+      }
+    }
+
+    if ($orAlternativeGroups.Count -eq 0) {
+      if ($baseConditions.Count -gt 0) { $groups += (,$baseConditions) }
+    } else {
+      # One group per alternative (per Or block), each combined with the
+      # base (non-Or) conditions that must always hold true.
+      foreach ($alternatives in $orAlternativeGroups) {
+        foreach ($alt in $alternatives) {
+          $groups += (,(@($baseConditions) + @($alt)))
+        }
+      }
+    }
   }
   return $groups
 }
