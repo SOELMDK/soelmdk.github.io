@@ -1,5 +1,20 @@
 <#
 .SYNOPSIS
+  DEPRECATED — superseded by build-patchmypc-catalog.js (Node.js).
+
+  PowerShell functions silently unwrap/flatten nested single-element
+  arrays on `return`, which made the recursive And/Or/Not distribution
+  needed to correctly extract DisplayName matcher groups unreliable
+  (a rewrite of Get-DisplayNameAlternatives to fix a Miro/Loom/GIMP-class
+  bug here regressed to producing almost no products at all, due to that
+  array-flattening behavior). Plain JS arrays don't have that footgun, so
+  the logic was ported to build-patchmypc-catalog.js, which is now the
+  canonical build script. This file is kept for reference only — do not
+  use it to regenerate patchmypc-catalog.json.
+
+  Original synopsis follows.
+
+.SYNOPSIS
   Builds a slim patchmypc-catalog.json from Patch My PC's full PatchMyPC.xml
   SCUP/WSUS catalog export, for the Intune compliance report page to load
   instead of parsing the full ~16 MB XML file in the browser.
