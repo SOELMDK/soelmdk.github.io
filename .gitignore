@@ -4,3 +4,9 @@
 # running the build script; only the derived patchmypc-catalog.json is
 # committed.
 Util/PatchMyPC.xml
+
+# Patch My PC's official supported-products feed (~6 MB), the source of
+# truth for which apps are supported and how to detect them. Downloaded
+# automatically by build-patchmypc-catalog.ps1 (or pass -SkipDownload to
+# reuse an existing local copy) — too large to track in git.
+Util/supportedproducts.xml

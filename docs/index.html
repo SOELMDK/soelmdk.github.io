@@ -413,26 +413,37 @@ async function graphGetAll(url, scopes = SCOPES) {
    that is SUPPORTED by Patch My PC's catalog — regardless of whether you
    currently manage/patch it through Patch My PC.
 
-   Uses a slim, pre-extracted catalog built from Patch My PC's own
-   SCUP/WSUS-style PatchMyPC.xml export by Util/build-patchmypc-catalog.ps1,
-   hosted at CATALOG_URL (an Azure Blob Storage container) instead of a
-   local file, so the catalog can be refreshed independently of this page
-   and shared across deployments (this page is served from GitHub Pages,
-   which has no server-side build step of its own). That script pulls,
-   per product:
-     - the product name + version out of each package's <sdp:Title> (e.g.
-       "Microsoft OneDrive 26.113.0614.0004 (x64)"), and
-     - its installed-app name-matching rule(s) (the <bar:RegSz Value="
-       DisplayName"> Comparison/Data used in the package's applicability
-       rules, e.g. BeginsWith "Microsoft OneDrive").
-   Packages are grouped by product name (splitting into separate per-
-   architecture products only where the matching rule itself is arch-
-   specific); the highest version seen across a product's packages is its
-   "latest version". Re-run `Util\build-patchmypc-catalog.ps1` and
-   re-upload the output whenever PatchMyPC.xml is updated — this JSON is
-   a build artifact, not a live parse of the XML (done for performance:
-   ~15.7 MB XML -> ~450 KB JSON, avoiding a multi-second DOM parse of the
-   full catalog on every page load).
+   Uses a slim, pre-extracted catalog built by
+   Util/build-patchmypc-catalog.ps1 from two Patch My PC sources, hosted
+   at CATALOG_URL (an Azure Blob Storage container) instead of a local
+   file, so the catalog can be refreshed independently of this page and
+   shared across deployments (this page is served from GitHub Pages,
+   which has no server-side build step of its own):
+     - supportedproducts.xml (Patch My PC's official supported-products
+       feed, api.patchmypc.com/downloads/xml/supportedproducts.xml) is the
+       source of truth for detection: each product's SQLSearchInclude /
+       SQLSearchExclude / Exclude fields are simple SQL LIKE patterns
+       (% = any run of chars, _ = any single char) matched against the
+       installed app's DisplayName — this is the same approach Patch My
+       PC's own community script (Get-PMPCFoundApps.ps1) uses. A product
+       matches if its `include` pattern matches and none of its
+       `excludes` patterns match.
+     - PatchMyPC.xml (Patch My PC's SCUP/WSUS-style catalog export) is
+       used only to find each product's "latest version": its package
+       <sdp:Title> text (e.g. "Microsoft OneDrive 26.113.0614.0004 (x64)")
+       is parsed into a name + version, and the highest version seen for
+       a matching WSUS package name becomes the product's latestVersion.
+       Because SQLSearchInclude often targets the real installed-app
+       DisplayName text (which can differ from the WSUS title's naming),
+       a fallback pass also matches by the product's own `name` field
+       (stripped of its trailing "(...)" arch suffix) against WSUS titles
+       parsed the same way, to recover version info for products the
+       Include-pattern pass misses (mainly architecture-split products).
+   Re-run `Util\build-patchmypc-catalog.ps1` and re-upload the output
+   whenever either source is updated — this JSON is a build artifact, not
+   a live parse of the XML (done for performance: ~22 MB of combined XML
+   -> under 600 KB JSON, avoiding a multi-second DOM parse on every page
+   load).
 
    NOTE: the blob container must have CORS configured to allow this page's
    origin (GET, header "*" or at least "Content-Type") or the browser will
@@ -449,7 +460,16 @@ async function loadCatalog() {
   if (!resp.ok) {
     throw new Error(`Could not load patchmypc-catalog.json from blob storage (${resp.status}). Run Util/build-patchmypc-catalog.ps1 and re-upload it.`);
   }
-  patchMyPcCatalog = await resp.json();
+  const catalog = await resp.json();
+  // Precompile each product's include/exclude LIKE patterns into RegExp
+  // objects once up front, instead of recompiling per detected app —
+  // there can be thousands of detected apps checked against ~3,000+
+  // catalog products, so this matters for page-load performance.
+  catalog.forEach((product) => {
+    product._includeRx = likeToRegex(product.include);
+    product._excludeRxs = (product.excludes || []).map(likeToRegex);
+  });
+  patchMyPcCatalog = catalog;
   return patchMyPcCatalog;
 }
 
@@ -477,30 +497,27 @@ function compareVersions(a, b) {
   return 0;
 }
 
-// Checks appName against a single name condition (mirrors the registry-
-// value comparisons Patch My PC itself uses for app detection).
-function matchesCondition(appName, condition) {
-  const name = appName.toLowerCase();
-  const data = condition.data.toLowerCase();
-  switch (condition.comparison) {
-    case "BeginsWith": return name.startsWith(data);
-    case "EndsWith": return name.endsWith(data);
-    case "Contains": return name.includes(data);
-    case "EqualTo": return name === data;
-    default: return false;
-  }
+// Converts a SQL LIKE pattern (% = any run of chars, _ = any single char)
+// into an anchored, case-insensitive regex. Mirrors Convert-LikeToRegex
+// in Util/build-patchmypc-catalog.ps1 — keep both in sync.
+function likeToRegex(pattern) {
+  const escaped = pattern.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const withWildcards = escaped.replace(/%/g, ".*").replace(/_/g, ".");
+  return new RegExp(`^${withWildcards}$`, "i");
 }
 
-// A matcher group matches only if every condition in it matches (AND).
-function matchesGroup(appName, group) {
-  return group.every((condition) => matchesCondition(appName, condition));
+// A product matches an installed app name if its include pattern matches
+// and none of its exclude patterns match.
+function matchesCatalogProduct(appName, product) {
+  if (!product._includeRx.test(appName)) return false;
+  return !product._excludeRxs.some((rx) => rx.test(appName));
 }
 
-// Finds the first catalog product with a matching name rule.
+// Finds the first catalog product whose include/exclude patterns match.
 function matchCatalogProduct(appName, catalog) {
   if (!appName) return null;
   for (const product of catalog) {
-    if (product.matchers.some((group) => matchesGroup(appName, group))) return product;
+    if (matchesCatalogProduct(appName, product)) return product;
   }
   return null;
 }
