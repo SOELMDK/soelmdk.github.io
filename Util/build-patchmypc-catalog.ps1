@@ -32,15 +32,17 @@
 
   NOTE: api.patchmypc.com does not send CORS headers, so the browser can't
   fetch SupportedProducts.xml directly — that's why this pre-processing
-  step (and hosting the result on our own Azure Blob Storage, same as
-  before) is still needed.
+  step is still needed. The resulting patchmypc-catalog.json is written
+  straight into docs/ (default OutputPath) so it's published as a static
+  file by GitHub Pages alongside index.html — same origin, no CORS setup,
+  no separate upload step.
 
   Re-run this script whenever PatchMyPC.xml or SupportedProducts.xml is
   updated/replaced:
     .\build-patchmypc-catalog.ps1
 
 .NOTES
-  Output: patchmypc-catalog.json — an array of
+  Output: docs/patchmypc-catalog.json — an array of
     { id, name, vendor, include, excludes: [ ... ], latestVersion }
   `include`/`excludes` are raw SQL-LIKE patterns (% = any chars, _ = any
   single char) — convert with the same likeToRegex() logic as
@@ -51,7 +53,7 @@ param(
   [string]$InputPath = (Join-Path $PSScriptRoot "PatchMyPC.xml"),
   [string]$SupportedProductsPath = (Join-Path $PSScriptRoot "supportedproducts.xml"),
   [string]$SupportedProductsUrl = "https://api.patchmypc.com/downloads/xml/supportedproducts.xml",
-  [string]$OutputPath = (Join-Path $PSScriptRoot "patchmypc-catalog.json"),
+  [string]$OutputPath = (Join-Path $PSScriptRoot "..\docs\patchmypc-catalog.json"),
   [switch]$SkipDownload
 )
 

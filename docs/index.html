@@ -415,10 +415,11 @@ async function graphGetAll(url, scopes = SCOPES) {
 
    Uses a slim, pre-extracted catalog built by
    Util/build-patchmypc-catalog.ps1 from two Patch My PC sources, hosted
-   at CATALOG_URL (an Azure Blob Storage container) instead of a local
-   file, so the catalog can be refreshed independently of this page and
-   shared across deployments (this page is served from GitHub Pages,
-   which has no server-side build step of its own):
+   at CATALOG_URL as a static file inside docs/ (published by GitHub
+   Pages alongside this page — same origin, so no CORS setup or separate
+   upload step is needed), so the catalog can be refreshed independently
+   of this page's other code and diffed/versioned like any other repo
+   file:
      - supportedproducts.xml (Patch My PC's official supported-products
        feed, api.patchmypc.com/downloads/xml/supportedproducts.xml) is the
        source of truth for detection: each product's SQLSearchInclude /
@@ -439,18 +440,13 @@ async function graphGetAll(url, scopes = SCOPES) {
        (stripped of its trailing "(...)" arch suffix) against WSUS titles
        parsed the same way, to recover version info for products the
        Include-pattern pass misses (mainly architecture-split products).
-   Re-run `Util\build-patchmypc-catalog.ps1` and re-upload the output
-   whenever either source is updated — this JSON is a build artifact, not
-   a live parse of the XML (done for performance: ~22 MB of combined XML
-   -> under 600 KB JSON, avoiding a multi-second DOM parse on every page
-   load).
-
-   NOTE: the blob container must have CORS configured to allow this page's
-   origin (GET, header "*" or at least "Content-Type") or the browser will
-   block the fetch with a CORS error despite the blob being publicly
-   readable.
+   Re-run `Util\build-patchmypc-catalog.ps1` (writes straight into
+   docs/patchmypc-catalog.json) and commit/push the result whenever either
+   source is updated — this JSON is a build artifact, not a live parse of
+   the XML (done for performance: ~22 MB of combined XML -> under 600 KB
+   JSON, avoiding a multi-second DOM parse on every page load).
    ========================================================================= */
-const CATALOG_URL = "https://sapublicsoelmsandbox.blob.core.windows.net/patchmypc-catalog/patchmypc-catalog.json";
+const CATALOG_URL = "patchmypc-catalog.json";
 
 let patchMyPcCatalog = null;
 
@@ -458,7 +454,7 @@ async function loadCatalog() {
   if (patchMyPcCatalog) return patchMyPcCatalog;
   const resp = await fetch(CATALOG_URL);
   if (!resp.ok) {
-    throw new Error(`Could not load patchmypc-catalog.json from blob storage (${resp.status}). Run Util/build-patchmypc-catalog.ps1 and re-upload it.`);
+    throw new Error(`Could not load patchmypc-catalog.json (${resp.status}). Run Util/build-patchmypc-catalog.ps1 and commit/push the result.`);
   }
   const catalog = await resp.json();
   // Precompile each product's include/exclude LIKE patterns into RegExp
