@@ -693,7 +693,7 @@ function renderComplianceTable(rows) {
     // Carries every (detectedAppId, version) pair for this product so the
     // device list can be fetched per version and annotated accordingly.
     const versionsPayload = encodeURIComponent(JSON.stringify(
-      r.versions.map((v) => ({ id: v.detectedAppId, version: v.version }))
+      r.versions.map((v) => ({ id: v.detectedAppId, displayName: v.displayName, version: v.version }))
     ));
 
     html += `<tr class="app-row clickable" data-versions="${versionsPayload}" data-latest-version="${escapeHtml(r.latestVersion)}" data-row="${idx}">
@@ -785,6 +785,14 @@ async function getDevicesForDetectedAppVersion(versionEntry) {
   }
 
   return [...new Map(matches.map((d) => [d.id, d])).values()];
+}
+
+async function toggleDeviceList(tr) {
+  const idx = tr.getAttribute("data-row");
+  const versions = JSON.parse(decodeURIComponent(tr.getAttribute("data-versions") || "[]"));
+  const latestVersion = tr.getAttribute("data-latest-version") || "–";
+  const deviceRow = complianceResult.querySelector(`tr.device-row[data-row-for="${idx}"]`);
+  const isOpen = deviceRow.style.display !== "none";
 
   if (isOpen) {
     deviceRow.style.display = "none";
