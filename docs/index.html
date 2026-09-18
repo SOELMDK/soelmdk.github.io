@@ -505,11 +505,38 @@ function likeToRegex(pattern) {
   return new RegExp(`^${withWildcards}$`, "i");
 }
 
+function normalizeAppNameForMatching(value) {
+  return String(value ?? "")
+    .trim()
+    .replace(/[._-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
 // A product matches an installed app name if its include pattern matches
-// and none of its exclude patterns match.
+// and none of its exclude patterns match. Some Intune app names use dots,
+// hyphens, or spacing variants for the same product (for example,
+// "Microsoft.OneDriveSync" vs. "Microsoft OneDrive") so we test both the
+// raw name and a normalized version where punctuation is collapsed to spaces.
 function matchesCatalogProduct(appName, product) {
-  if (!product._includeRx.test(appName)) return false;
-  return !product._excludeRxs.some((rx) => rx.test(appName));
+  if (!appName) return false;
+
+  const raw = String(appName).trim();
+  const normalized = normalizeAppNameForMatching(raw);
+  const candidates = new Set([raw, normalized]);
+
+  if (raw !== normalized) {
+    candidates.add(raw.replace(/[._-]+/g, " ").replace(/\s+/g, " "));
+  }
+
+  for (const candidate of candidates) {
+    if (product._includeRx.test(candidate)) {
+      const excluded = product._excludeRxs.some((rx) => rx.test(candidate));
+      if (!excluded) return true;
+    }
+  }
+
+  return false;
 }
 
 // Finds the first catalog product whose include/exclude patterns match.
@@ -735,8 +762,11 @@ async function getDevicesForDetectedAppVersion(versionEntry) {
       );
       const matchedApp = deviceApps.find((app) => {
         if (!app.displayName) return false;
-        const nameMatches = app.displayName === versionEntry.displayName;
-        if (!nameMatches) return false;
+
+        const rawNamesMatch = app.displayName === versionEntry.displayName;
+        const normalizedNamesMatch = normalizeAppNameForMatching(app.displayName) === normalizeAppNameForMatching(versionEntry.displayName);
+        if (!rawNamesMatch && !normalizedNamesMatch) return false;
+
         if (!versionEntry.version || versionEntry.version === "unknown") return true;
         return !app.version || app.version === versionEntry.version;
       });
@@ -754,15 +784,7 @@ async function getDevicesForDetectedAppVersion(versionEntry) {
     }
   }
 
-  return matches;
-}
-
-async function toggleDeviceList(tr) {
-  const idx = tr.getAttribute("data-row");
-  const versions = JSON.parse(decodeURIComponent(tr.getAttribute("data-versions") || "[]"));
-  const latestVersion = tr.getAttribute("data-latest-version") || "–";
-  const deviceRow = complianceResult.querySelector(`tr.device-row[data-row-for="${idx}"]`);
-  const isOpen = deviceRow.style.display !== "none";
+  return [...new Map(matches.map((d) => [d.id, d])).values()];
 
   if (isOpen) {
     deviceRow.style.display = "none";
@@ -777,7 +799,7 @@ async function toggleDeviceList(tr) {
     // Fetch devices per detected version and tag each with the version it
     // reported, so the same product row can show which devices are behind.
     const devicesByVersion = await Promise.all(versions.map(async (v) => getDevicesForDetectedAppVersion(v)));
-    const devices = devicesByVersion.flat();
+    const devices = [...new Map(devicesByVersion.flat().map((d) => [d.id, d])).values()];
 
     if (devices.length === 0) {
       listEl.innerHTML = "<p class='muted' style='margin:0'>No devices found.</p>";
