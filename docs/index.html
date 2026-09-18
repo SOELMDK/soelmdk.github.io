@@ -472,11 +472,14 @@ async function loadCatalog() {
 // Compares a detected install's version against a product's known latest
 // version, treating "–" (no parseable latest version) and "unknown"
 // (Graph reported no version) as "cannot determine compliance" rather than
-// non-compliant. Extracted here since this same check was previously
-// duplicated across loadComplianceReport, renderComplianceTable, and
-// toggleDeviceList.
+// non-compliant. A version is considered current when it is numerically
+// equal to or greater than the latest catalog version, because real-world
+// app versions may be reported with trailing zero segments (e.g. "26.03"
+// vs "26.03.00.0") or different padding.
 function isVersionUpToDate(version, latestVersion) {
-  return latestVersion !== "–" && version !== "unknown" && version.trim() === latestVersion.trim();
+  if (!latestVersion || latestVersion === "–") return false;
+  if (!version || version === "unknown") return false;
+  return compareVersions(version.trim(), latestVersion.trim()) >= 0;
 }
 
 // Compares two dotted version strings numerically (not lexically), e.g.
@@ -597,7 +600,7 @@ async function loadComplianceReport() {
       } else {
         warnCount++;
         devicesNeedingUpdate += row.versions
-          .filter((v) => v.version.trim() !== row.latestVersion.trim())
+          .filter((v) => compareVersions(v.version.trim(), row.latestVersion.trim()) < 0)
           .reduce((sum, v) => sum + v.deviceCount, 0);
       }
       rows.push(row);
