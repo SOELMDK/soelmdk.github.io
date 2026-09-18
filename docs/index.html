@@ -571,6 +571,7 @@ async function loadComplianceReport() {
       row.detectedNames.add(d.displayName);
       row.versions.push({
         detectedAppId: d.id,
+        displayName: d.displayName,
         version: d.version || "unknown",
         deviceCount: d.deviceCount || 0
       });
@@ -707,6 +708,55 @@ function formatReleaseDate(releaseDate) {
   return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
+async function getDevicesForDetectedAppVersion(versionEntry) {
+  const appDevicesUrl = `https://graph.microsoft.com/v1.0/deviceManagement/detectedApps/${versionEntry.id}/managedDevices?$select=id,deviceName,userPrincipalName&$top=999`;
+
+  try {
+    const devices = await graphGetAll(appDevicesUrl);
+    if (devices.length > 0) {
+      return devices.map((d) => ({ ...d, version: versionEntry.version, displayName: versionEntry.displayName }));
+    }
+  } catch (err) {
+    console.warn(`App-to-device relation unavailable for detected app ${versionEntry.id}; trying per-device fallback.`, err);
+  }
+
+  // Some detected apps can report a non-zero deviceCount even when the direct
+  // detectedApp/{id}/managedDevices relationship is empty. In that case, walk
+  // each managed device's own detectedApps collection and match by app name.
+  const managedDevices = await graphGetAll(
+    "https://graph.microsoft.com/v1.0/deviceManagement/managedDevices?$select=id,deviceName,userPrincipalName&$top=999"
+  );
+
+  const matches = [];
+  for (const device of managedDevices) {
+    try {
+      const deviceApps = await graphGetAll(
+        `https://graph.microsoft.com/v1.0/deviceManagement/managedDevices/${device.id}/detectedApps?$select=id,displayName,version,publisher&$top=999`
+      );
+      const matchedApp = deviceApps.find((app) => {
+        if (!app.displayName) return false;
+        const nameMatches = app.displayName === versionEntry.displayName;
+        if (!nameMatches) return false;
+        if (!versionEntry.version || versionEntry.version === "unknown") return true;
+        return !app.version || app.version === versionEntry.version;
+      });
+      if (matchedApp) {
+        matches.push({
+          id: device.id,
+          deviceName: device.deviceName,
+          userPrincipalName: device.userPrincipalName,
+          version: versionEntry.version,
+          displayName: versionEntry.displayName
+        });
+      }
+    } catch (deviceErr) {
+      console.warn(`Could not inspect detected apps for device ${device.id}:`, deviceErr);
+    }
+  }
+
+  return matches;
+}
+
 async function toggleDeviceList(tr) {
   const idx = tr.getAttribute("data-row");
   const versions = JSON.parse(decodeURIComponent(tr.getAttribute("data-versions") || "[]"));
@@ -726,13 +776,7 @@ async function toggleDeviceList(tr) {
   try {
     // Fetch devices per detected version and tag each with the version it
     // reported, so the same product row can show which devices are behind.
-    const devicesByVersion = await Promise.all(versions.map(async (v) => {
-      const devices = await graphGetAll(
-        `https://graph.microsoft.com/v1.0/deviceManagement/detectedApps/${v.id}/managedDevices` +
-        "?$select=id,deviceName,userPrincipalName&$top=999"
-      );
-      return devices.map((d) => ({ ...d, version: v.version }));
-    }));
+    const devicesByVersion = await Promise.all(versions.map(async (v) => getDevicesForDetectedAppVersion(v)));
     const devices = devicesByVersion.flat();
 
     if (devices.length === 0) {
